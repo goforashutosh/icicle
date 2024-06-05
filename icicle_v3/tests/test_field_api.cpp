@@ -9,6 +9,8 @@
 #include "icicle/matrix_ops.h"
 
 #include "icicle/fields/field_config.h"
+#include "icicle/utils/log.h"
+
 
 using namespace field_config;
 using namespace icicle;
@@ -192,13 +194,15 @@ TYPED_TEST(FieldApiTest, montgomeryConversion)
 #ifdef NTT_ENABLED
 TYPED_TEST(FieldApiTest, ntt)
 {
-  const int logn = 20;
+  const int logn = 16;
   const int N = 1 << logn;
-  auto scalars = std::make_unique<TypeParam[]>(N);
-  FieldApiTest<TypeParam>::random_samples(scalars.get(), N);
+  const int batch_size = 5;
+  const int total_size = N * batch_size;
+  auto scalars = std::make_unique<TypeParam[]>(total_size);
+  FieldApiTest<TypeParam>::random_samples(scalars.get(), total_size);
 
-  auto out_main = std::make_unique<TypeParam[]>(N);
-  auto out_ref = std::make_unique<TypeParam[]>(N);
+  auto out_main = std::make_unique<TypeParam[]>(total_size);
+  auto out_ref = std::make_unique<TypeParam[]>(total_size);
 
   auto run = [&](const std::string& dev_type, TypeParam* out, const char* msg, bool measure, int iters) {
     Device dev = {dev_type.c_str(), 0};
@@ -215,11 +219,14 @@ TYPED_TEST(FieldApiTest, ntt)
     ICICLE_CHECK(ntt_init_domain(scalar_t::omega(logn), init_domain_config));
 
     auto config = default_ntt_config<scalar_t>();
+    config.batch_size = batch_size;
+    
+    ntt_init_domain(scalar_t::omega(logn), init_domain_config); //FIXME - is "size" to total size or the size of the ntt? (ntt_size = total_size/batch_size... "size" is ntt_size or total_size?)
 
     TypeParam *d_in, *d_out;
-    icicle_malloc_async((void**)&d_in, N * sizeof(TypeParam), config.stream);
-    icicle_malloc_async((void**)&d_out, N * sizeof(TypeParam), config.stream);
-    icicle_copy_to_device_async(d_in, scalars.get(), N * sizeof(TypeParam), config.stream);
+    icicle_malloc_async((void**)&d_in, total_size * sizeof(TypeParam), config.stream);
+    icicle_malloc_async((void**)&d_out, total_size * sizeof(TypeParam), config.stream);
+    icicle_copy_to_device_async(d_in, scalars.get(), total_size * sizeof(TypeParam), config.stream);
 
     config.ordering = Ordering::kNN;
     config.stream = stream;
@@ -236,7 +243,7 @@ TYPED_TEST(FieldApiTest, ntt)
     }
     END_TIMER(NTT_sync, oss.str().c_str(), measure);
 
-    icicle_copy_to_host_async(out, d_out, N * sizeof(TypeParam), config.stream);
+    icicle_copy_to_host_async(out, d_out, total_size * sizeof(TypeParam), config.stream);
     icicle_stream_synchronize(config.stream);
     icicle_free_async(d_in, config.stream);
     icicle_free_async(d_out, config.stream);
@@ -245,10 +252,11 @@ TYPED_TEST(FieldApiTest, ntt)
   };
 
   run(s_main_target, out_main.get(), "ntt", false /*=measure*/, 1 /*=iters*/); // warmup
-  run(s_main_target, out_main.get(), "ntt", VERBOSE /*=measure*/, 10 /*=iters*/);
-  // run(s_reference_target, out_ref.get(), "ntt", VERBOSE /*=measure*/, 16 /*=iters*/);
 
-  // ASSERT_EQ(0, memcmp(out_main.get(), out_ref.get(), N * sizeof(scalar_t)));
+  run(s_main_target, out_main.get(), "ntt", VERBOSE /*=measure*/, 10 /*=iters*/);
+  run(s_reference_target, out_ref.get(), "ntt", VERBOSE /*=measure*/, 10 /*=iters*/);
+
+  ASSERT_EQ(0, memcmp(out_main.get(), out_ref.get(), total_size * sizeof(scalar_t)));
 }
 #endif // NTT_ENABLED
 
